@@ -256,3 +256,9 @@ KreGuard: by Kreflux
 An independent lab building Kreflux.
 Kre, to create. Flux, to change.
 https://kreflux.com
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
+
+Security issues: see [SECURITY.md](SECURITY.md).
