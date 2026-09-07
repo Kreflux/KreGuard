@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kreguard"
+version = "0.1.0"
+description = "Guardrail layer protecting LLM apps from jailbreaks and prompt injection. Text defenses are advisory, permissions are enforcement."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+keywords = ["llm", "security", "prompt-injection", "jailbreak", "guardrails"]
+
+[project.scripts]
+kreguard = "kreguard.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["kreguard*"]
