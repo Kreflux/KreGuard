@@ -1,5 +1,8 @@
 # KreGuard
 
+[![Discord](https://img.shields.io/discord/1546742017856376842?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/q9bmfQybn8)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 A guardrail layer that sits between an LLM application and the world.
 
 KreGuard starts from one premise: the model will eventually be tricked. Prompt
@@ -256,6 +259,12 @@ KreGuard: by Kreflux
 An independent lab building Kreflux.
 Kre, to create. Flux, to change.
 https://kreflux.com
+
+## Community & Ecosystem
+
+- 💬 **Discord**: [Join the Kreflux Community](https://discord.gg/q9bmfQybn8)
+- 🌐 **Web Platform**: [https://kreflux.com](https://kreflux.com)
+- 🐙 **GitHub Organization**: [https://github.com/Kreflux](https://github.com/Kreflux)
 
 ## License
 
