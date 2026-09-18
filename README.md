@@ -1,6 +1,6 @@
 # KreGuard
 
-[![Discord](https://img.shields.io/discord/1546742017856376842?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/q9bmfQybn8)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)](https://discord.gg/q9bmfQybn8)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 A guardrail layer that sits between an LLM application and the world.
