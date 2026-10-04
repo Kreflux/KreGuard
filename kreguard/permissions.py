@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Set, Union
 from urllib.parse import urlsplit
 
+from .adaptive.egress import AdaptiveEgress
 from .filterlist import FilterList
 from .verdict import Decision, Finding, Verdict
 
@@ -137,6 +138,9 @@ class EgressPolicy:
     # Denylist applied on top of the allowlist. Deny wins: a URL on the
     # allowlist is still refused if a filter list blocks it.
     blocklist: Optional[FilterList] = None
+    # Learns normal traffic per destination and blocks lookalikes of known-bad
+    # hosts. It can only add flags and blocks to a request the policy allowed.
+    learner: Optional[AdaptiveEgress] = None
 
     def __post_init__(self) -> None:
         self.domains = {self._canon(d) for d in self.domains}
@@ -240,10 +244,18 @@ class EgressPolicy:
         if self.blocklist is not None:
             hit = self.blocklist.match(url)
             if hit.blocked:
+                if self.learner is not None:
+                    self.learner.observe_malicious(url)
                 return block("filter_list", f"blocked by rule {hit.rule!r}")
 
         if self.ports is not None and port is not None and port not in self.ports:
             return block("port_denied", str(port))
+
+        if self.learner is not None:
+            for finding in self.learner.assess(url):
+                decision.add(finding)
+            if decision.verdict is Verdict.BLOCK:
+                return decision
 
         if self.flag_query_secrets and parts.query:
             if re.search(r"(?i)(token|key|secret|password|passwd|auth|session|credential|cookie)=", parts.query):
@@ -251,4 +263,6 @@ class EgressPolicy:
             if re.search(r"[A-Za-z0-9_\-]{40,}", parts.query):
                 decision.add(Finding("egress", "long_opaque_query", Verdict.FLAG, "query string carries a long opaque value", 0.4))
 
+        if self.learner is not None and decision.verdict is Verdict.ALLOW:
+            self.learner.observe(url)
         return decision

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kreguard"
-version = "0.2.0"
+version = "0.3.0"
 description = "Guardrail layer protecting LLM apps from jailbreaks and prompt injection. Text defenses are advisory, permissions are enforcement."
 readme = "README.md"
 license = { text = "Apache-2.0" }

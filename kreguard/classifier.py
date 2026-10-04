@@ -1,8 +1,9 @@
 """Pluggable semantic classifier.
 
 Patterns catch what they were written for. A classifier generalizes. KreGuard
-does not ship a model; it ships an interface and a small lexicon baseline so
-the pipeline works out of the box with zero dependencies.
+ships an interface, a fixed lexicon baseline, and ``AdaptiveClassifier`` (in
+``kreguard.adaptive``), a small model that keeps learning from feedback.
+Everything here runs with zero dependencies.
 
 Plug in anything that maps text to a probability of malicious intent:
 a fine-tuned encoder, an embedding similarity lookup, a hosted moderation
@@ -216,12 +217,21 @@ class SafeClassifier:
             verdict = Verdict.ALLOW
         decision.verdict = verdict
         if verdict is not Verdict.ALLOW:
+            detail = f"p(malicious)={result.score:.3f}"
+            describe = getattr(self.inner, "describe", None)
+            if callable(describe):
+                try:
+                    extra = describe(text)
+                    if extra:
+                        detail += "; " + str(extra)
+                except Exception:  # noqa: BLE001 - an explanation is optional
+                    pass
             decision.findings.append(
                 Finding(
                     source="classifier",
                     rule=result.name,
                     verdict=verdict,
-                    detail=f"p(malicious)={result.score:.3f}",
+                    detail=detail,
                     score=result.score,
                 )
             )

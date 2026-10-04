@@ -10,7 +10,7 @@ Example (see examples/kreguard.json):
     {
       "system_prompt_file": "prompt.txt",
       "thresholds": {"flag": 0.35, "block": 0.8},
-      "classifier": "lexicon",
+      "classifier": "adaptive",
       "tools": [
         {"name": "search_orders"},
         {"name": "issue_refund", "confirm": true, "max_calls": 1,
@@ -23,6 +23,7 @@ Example (see examples/kreguard.json):
         "builtin_blocklist": true,
         "blocklists": ["lists/extra.txt"]
       },
+      "adaptive": {"state_dir": "state", "auto_learn": true},
       "audit": {"path": "audit.jsonl", "include_text": false},
       "server": {"host": "127.0.0.1", "port": 8787, "token_env": "KREGUARD_TOKEN"}
     }
@@ -36,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
+from .adaptive import AdaptiveClassifier, AdaptiveEgress, ModelError
 from .audit import AuditLog
 from .classifier import LexiconClassifier
 from .filterlist import FilterList
@@ -50,7 +52,11 @@ class ConfigError(ValueError):
 
 _TOP_KEYS = {
     "system_prompt", "system_prompt_file", "thresholds", "max_input_chars", "on_error",
-    "classifier", "tools", "deny_tools", "egress", "audit", "server",
+    "classifier", "tools", "deny_tools", "egress", "audit", "server", "adaptive",
+}
+_ADAPT_KEYS = {
+    "state_dir", "auto_learn", "autosave_every", "egress", "memory_threshold",
+    "auto_per_hour", "min_samples", "flag_z", "block_z",
 }
 _EGRESS_KEYS = {
     "domains", "schemes", "ports", "allow_ip_literals", "allow_userinfo",
@@ -182,7 +188,7 @@ def _build_tools(data: Mapping[str, Any]) -> ToolPolicy:
     return policy
 
 
-def _build_egress(data: Mapping[str, Any], base: Path) -> EgressPolicy:
+def _build_egress(data: Mapping[str, Any], base: Path, learner: Optional[AdaptiveEgress] = None) -> EgressPolicy:
     _check_keys("egress", data, _EGRESS_KEYS)
     kwargs: Dict[str, Any] = {"domains": set(_str_list("egress.domains", data.get("domains", [])))}
     if "schemes" in data:
@@ -212,6 +218,8 @@ def _build_egress(data: Mapping[str, Any], base: Path) -> EgressPolicy:
             except OSError as exc:
                 raise ConfigError(f"egress.blocklists: cannot read {path}: {exc}") from exc
         kwargs["blocklist"] = blocklist
+    if learner is not None:
+        kwargs["learner"] = learner
     return EgressPolicy(**kwargs)
 
 
@@ -252,10 +260,45 @@ def guard_from_dict(data: Mapping[str, Any], base_dir: Union[str, Path] = ".") -
         except OSError as exc:
             raise ConfigError(f"system_prompt_file: cannot read {path}: {exc}") from exc
 
-    classifier_name = data.get("classifier", "lexicon")
-    if classifier_name not in ("lexicon", "none", None):
-        raise ConfigError("classifier must be 'lexicon' or 'none'")
-    classifier = LexiconClassifier() if classifier_name == "lexicon" else None
+    classifier_name = data.get("classifier", "adaptive")
+    if classifier_name not in ("adaptive", "lexicon", "none", None):
+        raise ConfigError("classifier must be 'adaptive', 'lexicon' or 'none'")
+
+    adaptive = _expect("adaptive", data.get("adaptive", {}), dict, "an object")
+    _check_keys("adaptive", adaptive, _ADAPT_KEYS)
+    state_dir: Optional[Path] = None
+    if "state_dir" in adaptive:
+        sd = Path(_expect("adaptive.state_dir", adaptive["state_dir"], str, "a directory path"))
+        state_dir = sd if sd.is_absolute() else base / sd
+    if "auto_learn" in adaptive:
+        config.auto_learn = bool(_expect("adaptive.auto_learn", adaptive["auto_learn"], bool, "true or false"))
+    autosave = _expect("adaptive.autosave_every", adaptive.get("autosave_every", 25), int, "an integer")
+
+    classifier = None
+    egress_learner: Optional[AdaptiveEgress] = None
+    try:
+        if classifier_name == "lexicon":
+            classifier = LexiconClassifier()
+        elif classifier_name == "adaptive":
+            ckw: Dict[str, Any] = {"autosave_every": autosave}
+            if "memory_threshold" in adaptive:
+                ckw["memory_threshold"] = float(adaptive["memory_threshold"])
+            if "auto_per_hour" in adaptive:
+                ckw["auto_per_hour"] = _expect("adaptive.auto_per_hour", adaptive["auto_per_hour"], int, "an integer")
+            classifier = AdaptiveClassifier(path=(state_dir / "text-model.json") if state_dir else None, **ckw)
+        if bool(adaptive.get("egress", True)):
+            ekw: Dict[str, Any] = {"autosave_every": autosave}
+            for key in ("min_samples", "flag_z", "block_z"):
+                if key in adaptive:
+                    ekw[key] = adaptive[key]
+            # An operator who turns the built-in denylist off does not want its
+            # hosts smuggled back in through the learner's seed.
+            ekw["seed_malicious"] = bool(_expect("egress", data.get("egress", {}), dict, "an object").get("builtin_blocklist", True))
+            egress_learner = AdaptiveEgress(path=(state_dir / "egress-model.json") if state_dir else None, **ekw)
+    except ModelError as exc:
+        raise ConfigError(f"adaptive model could not be loaded, refusing to start: {exc}") from exc
+    except ValueError as exc:
+        raise ConfigError(f"adaptive: {exc}") from exc
 
     audit: Optional[AuditLog] = None
     if "audit" in data:
@@ -288,7 +331,7 @@ def guard_from_dict(data: Mapping[str, Any], base_dir: Union[str, Path] = ".") -
         config=config,
         classifier=classifier,
         tool_policy=_build_tools(data),
-        egress_policy=_build_egress(data.get("egress", {}), base),
+        egress_policy=_build_egress(data.get("egress", {}), base, egress_learner),
         system_prompt=prompt,
         audit=audit,
     )

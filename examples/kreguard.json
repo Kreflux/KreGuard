@@ -1,22 +1,61 @@
 {
   "system_prompt_file": "support_prompt.txt",
-  "thresholds": { "flag": 0.35, "block": 0.8 },
-  "classifier": "lexicon",
+  "thresholds": {
+    "flag": 0.35,
+    "block": 0.8
+  },
+  "classifier": "adaptive",
+  "adaptive": {
+    "state_dir": "state",
+    "auto_learn": true,
+    "autosave_every": 25
+  },
   "tools": [
-    { "name": "search_orders", "args": { "order_id": { "type": "string", "pattern": "[A-Z0-9-]{4,20}" } }, "strict_args": true },
+    {
+      "name": "search_orders",
+      "args": {
+        "order_id": {
+          "type": "string",
+          "pattern": "[A-Z0-9-]{4,20}"
+        }
+      },
+      "strict_args": true
+    },
     {
       "name": "issue_refund",
       "confirm": true,
       "max_calls": 1,
-      "args": { "amount": { "type": "number", "min": 0.01, "max": 500, "required": true } }
+      "args": {
+        "amount": {
+          "type": "number",
+          "min": 0.01,
+          "max": 500,
+          "required": true
+        }
+      }
     }
   ],
-  "deny_tools": ["shell", "run_python"],
+  "deny_tools": [
+    "shell",
+    "run_python"
+  ],
   "egress": {
-    "domains": ["api.acme.com", "*.stripe.com"],
-    "ports": [443],
+    "domains": [
+      "api.acme.com",
+      "*.stripe.com"
+    ],
+    "ports": [
+      443
+    ],
     "builtin_blocklist": true
   },
-  "audit": { "path": "kreguard-audit.jsonl", "include_text": false },
-  "server": { "host": "127.0.0.1", "port": 8787, "token_env": "KREGUARD_TOKEN" }
+  "audit": {
+    "path": "kreguard-audit.jsonl",
+    "include_text": false
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8787,
+    "token_env": "KREGUARD_TOKEN"
+  }
 }

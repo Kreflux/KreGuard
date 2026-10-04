@@ -83,6 +83,24 @@ class AuditLog:
                 self._warned = True
                 print(f"kreguard: audit log write failed: {exc}", file=sys.stderr)
 
+    def event(self, kind: str, fields: Mapping[str, Any], subject: Optional[str] = None) -> None:
+        """Log something that is not a verdict, such as operator feedback."""
+        entry: dict = {"ts": round(time.time(), 3), "kind": kind, **fields}
+        if subject is not None:
+            entry["subject_sha256"] = hashlib.sha256(subject.encode("utf-8", "replace")).hexdigest()
+            entry["subject_len"] = len(subject)
+            if self.include_text:
+                entry["subject"] = subject
+        try:
+            line = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+            with self._lock:
+                self._stream.write(line + "\n")
+                self._stream.flush()
+        except Exception as exc:  # noqa: BLE001
+            if not self._warned:
+                self._warned = True
+                print(f"kreguard: audit log write failed: {exc}", file=sys.stderr)
+
     def close(self) -> None:
         if self._owns_stream:
             try:

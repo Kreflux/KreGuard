@@ -9,3 +9,5 @@ dist/
 .venv/
 .coverage
 kreguard-audit.jsonl
+examples/state/
+state/

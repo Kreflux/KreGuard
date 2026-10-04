@@ -13,16 +13,21 @@ and egress are enforcement: they bound the damage when an attack succeeds.
 Every check returns one of three verdicts: allow, flag, block. Every check
 fails closed. An internal error is never an allow.
 
+The text and egress defenses also adapt. They learn from corrections and from
+hard evidence while they run, but learning is advisory and bounded: it can add
+flags and blocks, never override a rule or an allowlist.
+
 The core has no runtime dependencies outside the Python standard library.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .audit import AuditLog
+from .adaptive import AdaptiveClassifier, AdaptiveEgress, ModelError
 from .classifier import Classifier, LexiconClassifier
 from .config import ConfigError, Settings, guard_from_dict, load_settings
 from .filterlist import FilterList, FilterMatch
-from .guard import Guard, GuardConfig
+from .guard import AdaptationError, Guard, GuardConfig
 from .judge import Judge, JudgeResult, PromptJudge
 from .normalize import NormalizedText, normalize
 from .output_scan import OutputDecision, OutputScanner
@@ -31,6 +36,9 @@ from .permissions import EgressPolicy, ToolPolicy
 from .verdict import Decision, Finding, Verdict, worst
 
 __all__ = [
+    "AdaptationError",
+    "AdaptiveClassifier",
+    "AdaptiveEgress",
     "AuditLog",
     "Classifier",
     "ConfigError",
@@ -44,6 +52,7 @@ __all__ = [
     "Judge",
     "JudgeResult",
     "LexiconClassifier",
+    "ModelError",
     "NormalizedText",
     "OutputDecision",
     "OutputScanner",

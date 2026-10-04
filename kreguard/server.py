@@ -12,6 +12,14 @@ Endpoints (JSON in, JSON out):
     POST /v1/authorize/tool       {"tool": "name", "arguments": {...}}
     POST /v1/authorize/egress     {"url": "https://..."}
     POST /v1/budgets/reset        clear tool call budgets
+    POST /v1/feedback/input       {"text": "...", "attack": true|false}
+    POST /v1/feedback/egress      {"url": "https://...", "malicious": true|false}
+    GET  /v1/model                what the learners have learned so far
+    POST /v1/model/save           persist the learners now
+
+Feedback is how the guard adapts, so it is also a way to poison it. Feedback
+endpoints need the same token as everything else; never expose them to
+users of the protected app.
 
 A 200 response carries ``{"decision": {...}}``. Treat anything else as a
 block: a client that cannot get a decision must not proceed. Malformed
@@ -33,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional, Tuple
 
 from . import __version__
-from .guard import Guard
+from .guard import AdaptationError, Guard
 from .verdict import Verdict
 
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
@@ -138,6 +146,10 @@ class _Handler(BaseHTTPRequestHandler):
             if not self._authorized():
                 return self._deny_auth()
             return self._json(200, _policy_summary(self.server.guard))
+        if path == "/v1/model":
+            if not self._authorized():
+                return self._deny_auth()
+            return self._json(200, self.server.guard.model_stats())
         self._error(404, "not found")
 
     # POST
@@ -150,6 +162,9 @@ class _Handler(BaseHTTPRequestHandler):
             "/v1/authorize/tool": self._tool,
             "/v1/authorize/egress": self._egress,
             "/v1/budgets/reset": self._reset,
+            "/v1/feedback/input": self._feedback_input,
+            "/v1/feedback/egress": self._feedback_egress,
+            "/v1/model/save": self._save_models,
         }
         handler = routes.get(path)
         if handler is None:
@@ -163,6 +178,10 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             handler(body)
+        except AdaptationError as exc:
+            self._json(409, {"error": str(exc)})
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
         except Exception:  # noqa: BLE001 - an internal failure is a block, never an allow
             self._error(500, "internal error")
 
@@ -255,6 +274,30 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._json(200, {"decision": self.server.guard.authorize_egress(url).as_dict()})
 
+    def _require_bool(self, body: Dict[str, Any], key: str) -> Optional[bool]:
+        value = body.get(key)
+        if not isinstance(value, bool):
+            self._error(400, f"'{key}' must be true or false")
+            return None
+        return value
+
+    def _feedback_input(self, body: Dict[str, Any]) -> None:
+        text = self._require_str(body, "text")
+        attack = self._require_bool(body, "attack") if text is not None else None
+        if text is None or attack is None:
+            return
+        self._json(200, {"learned": self.server.guard.feedback_input(text, attack)})
+
+    def _feedback_egress(self, body: Dict[str, Any]) -> None:
+        url = self._require_str(body, "url")
+        malicious = self._require_bool(body, "malicious") if url is not None else None
+        if url is None or malicious is None:
+            return
+        self._json(200, {"learned": self.server.guard.feedback_egress(url, malicious)})
+
+    def _save_models(self, body: Dict[str, Any]) -> None:
+        self._json(200, {"saved": self.server.guard.save_models()})
+
     def _reset(self, body: Dict[str, Any]) -> None:
         with self.server.tool_lock:
             self.server.guard.tool_policy.reset_budgets()
@@ -276,6 +319,7 @@ def _policy_summary(guard: Guard) -> Dict[str, Any]:
             "blocklist_rules": len(egress.blocklist) if egress.blocklist is not None else 0,
         },
         "audit": guard.audit is not None,
+        "adaptive": {"text": guard.learner is not None, "egress": egress.learner is not None, "auto_learn": guard.config.auto_learn},
     }
     return summary
 
@@ -289,6 +333,12 @@ def serve(guard: Guard, host: str = "127.0.0.1", port: int = 8787, token: Option
         print("\nshutting down", flush=True)
     finally:
         server.server_close()
+        try:
+            saved = guard.save_models()
+            if saved:
+                print("saved " + ", ".join(saved), flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"could not save models: {exc}", flush=True)
 
 
 _PLAYGROUND = """<!doctype html>
@@ -315,6 +365,7 @@ textarea{min-height:130px;resize:vertical;font-family:ui-monospace,SFMono-Regula
 .row{display:flex;gap:10px;align-items:center;margin-top:12px}
 button.go{background:var(--accent);color:#fff;border:0;padding:9px 18px;border-radius:8px;font:inherit;cursor:pointer}
 button.go:disabled{opacity:.6;cursor:wait}
+button.go.alt{background:none;color:var(--fg);border:1px solid var(--line)}
 .chip{display:inline-block;padding:2px 12px;border-radius:999px;font-weight:600;color:#fff;text-transform:uppercase;font-size:13px;letter-spacing:.04em}
 .chip.allow{background:var(--allow)}.chip.flag{background:var(--flag);color:#1c1c1a}.chip.block{background:var(--block)}
 table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}
@@ -340,7 +391,12 @@ pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:
 <div><span id="verdict" class="chip"></span> <span id="meta" class="sub"></span></div>
 <table id="findings"><thead><tr><th>Stage</th><th>Rule</th><th>Detail</th></tr></thead><tbody></tbody></table>
 <div id="redactedBox" class="hidden"><label>Redacted output</label><pre id="redacted"></pre></div>
+<div id="teach" class="hidden">
+<label>Teach the guard. It adapts: a correction applies to this text and its close paraphrases right away.</label>
+<div class="row"><button class="go" id="markBad" type="button"></button><button class="go alt" id="markGood" type="button"></button><span id="teachMsg" class="sub"></span></div>
 </div>
+</div>
+<div class="card" id="model"><label>What it has learned</label><div id="modelStats" class="sub">Enter your token if needed, then run a check.</div></div>
 </main>
 <script nonce="__NONCE__">
 const MODES = {
@@ -349,6 +405,11 @@ const MODES = {
   tool:   {label:"Tool",   path:"/v1/authorize/tool",  fields:[["tool","Tool name","input","search_orders"],["arguments","Arguments (JSON)","textarea","{}"]]},
   egress: {label:"Egress", path:"/v1/authorize/egress",fields:[["url","URL","input","https://webhook.site/abc"]]}
 };
+const TEACH = {
+  input:  {path:"/v1/feedback/input",  bad:"This was an attack", good:"This was safe", body:(p,bad)=>({text:p.text, attack:bad})},
+  egress: {path:"/v1/feedback/egress", bad:"Malicious destination", good:"Safe destination", body:(p,bad)=>({url:p.url, malicious:bad})}
+};
+let lastPayload = null;
 let mode = "input";
 const $ = id => document.getElementById(id);
 function render(){
@@ -378,10 +439,42 @@ function show(data){
     for (const t of [fd.source, fd.rule, fd.detail]) tr.insertCell().textContent = t;
   }
   if (!d.findings.length) { const c = body.insertRow().insertCell(); c.colSpan = 3; c.textContent = "No findings."; }
+  const t = TEACH[mode];
+  $("teach").classList.toggle("hidden", !t);
+  if (t) { $("markBad").textContent = t.bad; $("markGood").textContent = t.good; $("teachMsg").textContent = ""; }
   const showRedacted = typeof data.redacted === "string" && d.verdict !== "allow";
   $("redactedBox").classList.toggle("hidden", !showRedacted);
   if (showRedacted) $("redacted").textContent = data.redacted;
 }
+function authHeaders(){
+  const headers = {"Content-Type":"application/json"};
+  const tok = $("token").value; if (tok) headers["Authorization"] = "Bearer " + tok;
+  return headers;
+}
+async function refreshModel(){
+  try {
+    const r = await fetch("/v1/model", {headers: authHeaders()});
+    if (!r.ok) { $("modelStats").textContent = r.status === 401 ? "Enter the API token to see model stats." : "Model stats unavailable."; return; }
+    const m = await r.json(); const parts = [];
+    if (m.text) parts.push("text model: " + m.text.updates + " updates, " + m.text.memory + " remembered attacks, " + m.text.feedback_attack + " attack and " + m.text.feedback_safe + " safe corrections, " + m.text.auto_attack + " self-taught");
+    if (m.egress) parts.push("egress: " + m.egress.hosts_with_baseline + " destinations with a learned baseline, " + m.egress.learned_blocked_count + " learned blocks");
+    $("modelStats").textContent = parts.length ? parts.join(" | ") : "No learning components are enabled.";
+  } catch (e) { $("modelStats").textContent = "Model stats unavailable."; }
+}
+async function teach(bad){
+  const t = TEACH[mode]; if (!t || !lastPayload) return;
+  const msg = $("teachMsg"); msg.className = "sub"; msg.textContent = "";
+  try {
+    const r = await fetch(t.path, {method:"POST", headers: authHeaders(), body: JSON.stringify(t.body(lastPayload, bad))});
+    const data = await r.json();
+    if (!r.ok) { msg.className = "sub err"; msg.textContent = data.error || ("error " + r.status); return; }
+    const l = data.learned;
+    msg.textContent = typeof l.p_before === "number" ? "Learned. Score went from " + l.p_before.toFixed(2) + " to " + l.p_after.toFixed(2) + ". Press Check to see it." : "Learned. Press Check to see it.";
+    refreshModel();
+  } catch (e) { msg.className = "sub err"; msg.textContent = "Request failed: " + e.message; }
+}
+$("markBad").onclick = () => teach(true);
+$("markGood").onclick = () => teach(false);
 $("go").onclick = async () => {
   const status = $("status"); status.className = "sub"; status.textContent = "";
   const payload = {};
@@ -391,8 +484,8 @@ $("go").onclick = async () => {
     if (name === "system_prompt" && !v) continue;
     payload[name] = v;
   }
-  const headers = {"Content-Type":"application/json"};
-  const tok = $("token").value; if (tok) headers["Authorization"] = "Bearer " + tok;
+  const headers = authHeaders();
+  lastPayload = payload;
   $("go").disabled = true;
   try {
     const r = await fetch(MODES[mode].path, {method:"POST", headers, body: JSON.stringify(payload)});
@@ -401,6 +494,7 @@ $("go").onclick = async () => {
     else show(data);
   } catch (e) { status.className = "sub err"; status.textContent = "Request failed: " + e.message; }
   finally { $("go").disabled = false; }
+  refreshModel();
 };
 render();
 </script>
