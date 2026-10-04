@@ -16,7 +16,12 @@ fails closed. An internal error is never an allow.
 The core has no runtime dependencies outside the Python standard library.
 """
 
+__version__ = "0.2.0"
+
+from .audit import AuditLog
 from .classifier import Classifier, LexiconClassifier
+from .config import ConfigError, Settings, guard_from_dict, load_settings
+from .filterlist import FilterList, FilterMatch
 from .guard import Guard, GuardConfig
 from .judge import Judge, JudgeResult, PromptJudge
 from .normalize import NormalizedText, normalize
@@ -26,9 +31,13 @@ from .permissions import EgressPolicy, ToolPolicy
 from .verdict import Decision, Finding, Verdict, worst
 
 __all__ = [
+    "AuditLog",
     "Classifier",
+    "ConfigError",
     "Decision",
     "EgressPolicy",
+    "FilterList",
+    "FilterMatch",
     "Finding",
     "Guard",
     "GuardConfig",
@@ -41,8 +50,12 @@ __all__ = [
     "PatternScanner",
     "PromptJudge",
     "Rule",
+    "Settings",
     "ToolPolicy",
     "Verdict",
+    "__version__",
+    "guard_from_dict",
+    "load_settings",
     "normalize",
     "worst",
 ]

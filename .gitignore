@@ -8,3 +8,4 @@ build/
 dist/
 .venv/
 .coverage
+kreguard-audit.jsonl

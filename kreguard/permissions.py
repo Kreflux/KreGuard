@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Set, Union
 from urllib.parse import urlsplit
 
+from .filterlist import FilterList
 from .verdict import Decision, Finding, Verdict
 
 ArgValidator = Callable[[Mapping[str, Any]], Union[bool, str, None]]
@@ -133,6 +134,9 @@ class EgressPolicy:
     allow_userinfo: bool = False
     max_url_length: int = 2048
     flag_query_secrets: bool = True
+    # Denylist applied on top of the allowlist. Deny wins: a URL on the
+    # allowlist is still refused if a filter list blocks it.
+    blocklist: Optional[FilterList] = None
 
     def __post_init__(self) -> None:
         self.domains = {self._canon(d) for d in self.domains}
@@ -232,6 +236,11 @@ class EgressPolicy:
                 return block("private_hostname", host)
             if not self._domain_allowed(host):
                 return block("not_allowlisted", host)
+
+        if self.blocklist is not None:
+            hit = self.blocklist.match(url)
+            if hit.blocked:
+                return block("filter_list", f"blocked by rule {hit.rule!r}")
 
         if self.ports is not None and port is not None and port not in self.ports:
             return block("port_denied", str(port))

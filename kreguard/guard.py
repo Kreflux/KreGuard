@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
+from urllib.parse import urlsplit
 
+from .audit import AuditLog
 from .classifier import Classifier, SafeClassifier
 from .judge import Judge, apply_judge
 from .normalize import normalize
@@ -50,6 +52,7 @@ class Guard:
         tool_policy: Optional[ToolPolicy] = None,
         egress_policy: Optional[EgressPolicy] = None,
         system_prompt: Optional[str] = None,
+        audit: Optional[AuditLog] = None,
     ) -> None:
         self.config = config or GuardConfig()
         self.patterns = patterns or PatternScanner(
@@ -64,14 +67,17 @@ class Guard:
         # Empty policies deny everything. That is the point.
         self.tool_policy = tool_policy or ToolPolicy()
         self.egress_policy = egress_policy or EgressPolicy()
+        self.audit = audit
 
     # Input
 
     def check_input(self, text: str) -> Decision:
         try:
-            return self._check_input(text)
+            decision = self._check_input(text)
         except Exception as exc:  # noqa: BLE001 - never fail open
-            return fail_closed("input", exc, self.config.on_error)
+            decision = fail_closed("input", exc, self.config.on_error)
+        self._record("input", decision, text if isinstance(text, str) else None)
+        return decision
 
     def _check_input(self, text: str) -> Decision:
         if text is None or (isinstance(text, str) and not text.strip()):
@@ -122,27 +128,60 @@ class Guard:
 
     def check_output(self, text: str, system_prompt: Optional[str] = None) -> OutputDecision:
         try:
-            return self.output_scanner.scan(text, system_prompt)
+            decision = self.output_scanner.scan(text, system_prompt)
         except Exception as exc:  # noqa: BLE001
             base = fail_closed("output", exc, self.config.on_error)
-            return OutputDecision(
+            decision = OutputDecision(
                 verdict=base.verdict,
                 findings=base.findings,
                 score=base.score,
                 stage="output",
                 redacted=self.output_scanner.redact_with,
             )
+        self._record("output", decision, text if isinstance(text, str) else None)
+        return decision
 
     # Enforcement
 
     def authorize_tool(self, tool: str, args: Optional[Mapping[str, Any]] = None) -> Decision:
         try:
-            return self.tool_policy.authorize(tool, args)
+            decision = self.tool_policy.authorize(tool, args)
         except Exception as exc:  # noqa: BLE001
-            return fail_closed("tools", exc, Verdict.BLOCK)
+            decision = fail_closed("tools", exc, Verdict.BLOCK)
+        # Argument values stay out of the log; names are enough to investigate.
+        keys = sorted(str(k) for k in args) if isinstance(args, Mapping) else None
+        self._record(
+            "tool",
+            decision,
+            display=tool if isinstance(tool, str) else repr(tool),
+            extra={"arg_names": keys} if keys else None,
+        )
+        return decision
 
     def authorize_egress(self, url: str) -> Decision:
         try:
-            return self.egress_policy.authorize(url)
+            decision = self.egress_policy.authorize(url)
         except Exception as exc:  # noqa: BLE001
-            return fail_closed("egress", exc, Verdict.BLOCK)
+            decision = fail_closed("egress", exc, Verdict.BLOCK)
+        self._record("egress", decision, url if isinstance(url, str) else None, display=_safe_url(url))
+        return decision
+
+    def _record(self, kind: str, decision: Decision, subject: Optional[str] = None, display: Optional[str] = None, extra: Optional[Mapping[str, Any]] = None) -> None:
+        if self.audit is None:
+            return
+        try:
+            self.audit.record(kind, decision, subject, display, extra)
+        except Exception:  # noqa: BLE001 - auditing never changes a verdict
+            pass
+
+
+def _safe_url(url: Any) -> Optional[str]:
+    """scheme://host/path only. Query strings and userinfo often hold secrets."""
+    if not isinstance(url, str):
+        return None
+    try:
+        parts = urlsplit(url.strip())
+        host = parts.hostname or ""
+    except ValueError:
+        return "<unparseable>"
+    return f"{parts.scheme}://{host}{parts.path}"[:200]
